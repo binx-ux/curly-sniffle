@@ -1,0 +1,154 @@
+.vc-clientBadges-root {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-top: 4px;
+}
+
+.vc-clientBadges-hint {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.35;
+    margin: 0;
+}
+
+.vc-clientBadges-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-clientBadges-heading {
+    color: var(--header-secondary, var(--text-muted));
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    margin: 0;
+}
+
+.vc-clientBadges-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 6px;
+}
+
+.vc-clientBadges-tile {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    padding: 8px 10px;
+    cursor: pointer;
+    text-align: left;
+    min-height: 40px;
+}
+
+.vc-clientBadges-tile:hover {
+    background: var(--background-modifier-hover);
+}
+
+.vc-clientBadges-tile.on {
+    border-color: var(--brand-500);
+    background: var(--background-modifier-selected);
+}
+
+.vc-clientBadges-tileImg {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.vc-clientBadges-tileName {
+    font-size: 12px;
+    line-height: 1.25;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.vc-clientBadges-count {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: 0;
+}
+
+.vc-clientBadges-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-clientBadges-formRow {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.vc-clientBadges-formRow > div {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-clientBadges-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.vc-clientBadges-customList {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.vc-clientBadges-customRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-radius: 8px;
+    background: var(--background-secondary);
+    padding: 8px 10px;
+}
+
+.vc-clientBadges-customRow img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.vc-clientBadges-customMeta {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-clientBadges-customMeta strong {
+    display: block;
+    font-size: 13px;
+    color: var(--text-normal);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-clientBadges-customMeta span {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-clientBadges-empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 8px 0;
+}
