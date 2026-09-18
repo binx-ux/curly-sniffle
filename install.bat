@@ -85,6 +85,7 @@ echo.
 for %%P in (
   profile\friendBadges
   profile\clientBadges
+  music\spotBuddy
 ) do (
   call :install_one "%%P"
 )
@@ -151,7 +152,7 @@ if !RC! GEQ 8 (
   goto :fail
 )
 
-findstr /C:"FriendBadges" /C:"ClientBadges" "%ROAM%\renderer.js" >nul 2>&1
+findstr /C:"FriendBadges" /C:"ClientBadges" /C:"SpotBuddy" "%ROAM%\renderer.js" >nul 2>&1
 if errorlevel 1 (
   echo %C3%  [!] build applied, but plugin names were not found in renderer.js%C0%
 ) else (

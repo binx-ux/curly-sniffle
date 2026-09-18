@@ -11,10 +11,11 @@ cool that you want to mess with this. keep it simple.
 
 ## adding a plugin
 
-this repo is badge / profile stuff. put new plugins under:
+this repo is badge / profile / music stuff. put new plugins under:
 
 ```
 profile/
+music/
 ```
 
 each plugin is its own folder with an `index.tsx` (or `index.ts`).

@@ -1,0 +1,194 @@
+.vc-spotBuddy-host {
+    margin-top: 8px;
+    width: 100%;
+}
+
+.vc-spotBuddy-card {
+    margin: 0;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--background-secondary);
+}
+
+.vc-spotBuddy-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.vc-spotBuddy-art {
+    width: 56px;
+    height: 56px;
+    border-radius: 6px;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.vc-spotBuddy-meta {
+    min-width: 0;
+    flex: 1;
+}
+
+.vc-spotBuddy-title {
+    color: var(--text-normal);
+    font-size: 14px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-spotBuddy-sub {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-spotBuddy-bar {
+    margin-top: 8px;
+    height: 3px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+}
+
+.vc-spotBuddy-fill {
+    height: 100%;
+    background: #1ed760;
+    transition: width 0.08s linear;
+}
+
+.vc-spotBuddy-lyrics {
+    margin-top: 10px;
+    text-align: center;
+    min-height: 54px;
+}
+
+.vc-spotBuddy-lyrics.vc-spotBuddy-fancy {
+    height: 150px;
+    min-height: 150px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        #000 16%,
+        #000 84%,
+        transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        #000 16%,
+        #000 84%,
+        transparent 100%
+    );
+}
+
+.vc-spotBuddy-line {
+    font-size: 13px;
+    line-height: 1.35;
+    padding: 0 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+        opacity 0.2s ease,
+        transform 0.2s ease,
+        filter 0.2s ease,
+        color 0.2s ease,
+        font-size 0.2s ease;
+}
+
+.vc-spotBuddy-prev,
+.vc-spotBuddy-next {
+    color: var(--text-muted);
+    opacity: 0.65;
+}
+
+.vc-spotBuddy-fancy .vc-spotBuddy-far {
+    opacity: 0.2;
+    transform: scale(0.92);
+    filter: blur(1px);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.vc-spotBuddy-fancy .vc-spotBuddy-near {
+    opacity: 0.4;
+    transform: scale(0.95);
+    color: var(--text-muted);
+    font-size: 12.5px;
+}
+
+.vc-spotBuddy-fancy .vc-spotBuddy-prev,
+.vc-spotBuddy-fancy .vc-spotBuddy-next {
+    opacity: 0.55;
+    transform: scale(0.98);
+    filter: none;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.vc-spotBuddy-cur {
+    color: var(--text-normal);
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.vc-spotBuddy-fancy .vc-spotBuddy-cur {
+    opacity: 1;
+    transform: scale(1.05);
+    filter: none;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.vc-spotBuddy-karaoke {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+}
+
+.vc-spotBuddy-karaoke-dim {
+    color: color-mix(in srgb, var(--text-normal) 45%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    max-width: 100%;
+}
+
+.vc-spotBuddy-karaoke-lit {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.vc-spotBuddy-karaoke-lit-inner {
+    color: #1ed760;
+    display: block;
+}
+
+.vc-spotBuddy-muted {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.vc-spotBuddy-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    justify-content: flex-end;
+}

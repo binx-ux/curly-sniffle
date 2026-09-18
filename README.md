@@ -33,7 +33,7 @@ vencord badge plugins. mit. [license](./LICENSE) · [contributing](./CONTRIBUTIN
 
 ![mit](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)
 ![vencord](https://img.shields.io/badge/vencord-userplugins-5865F2?style=flat-square&logo=discord&logoColor=white)
-![count](https://img.shields.io/badge/plugins-2-2ea44f?style=flat-square)
+![count](https://img.shields.io/badge/plugins-3-2ea44f?style=flat-square)
 
 you need a [vencord](https://github.com/Vendicated/Vencord) **from source**. then:
 
@@ -53,6 +53,11 @@ local badges for people + optional shared json registry (`registry.example.json`
 
 **[clientBadges](./profile/clientBadges)** · `/clientbadge`  
 click badges in settings (or use the command). any discord badges / custom images. only you see them.
+
+## music
+
+**[spotBuddy](./music/spotBuddy)**  
+live spotify lyrics on profiles (lrclib), track card, share / open buttons. works best on you; also shows on others when they have spotify activity.
 
 ---
 
