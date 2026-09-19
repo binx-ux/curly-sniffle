@@ -42,7 +42,7 @@ const settings = definePluginSettings({
     },
     syncOffsetMs: {
         type: OptionType.NUMBER,
-        description: "Lyric offset in ms (negative = earlier)",
+        description: "Lyric offset in ms (negative = earlier, positive = later)",
         default: 0,
     },
     fancyLyrics: {
@@ -50,7 +50,31 @@ const settings = definePluginSettings({
         description: "Fancy lyric animation",
         default: true,
     },
+    customCss: {
+        type: OptionType.STRING,
+        description: "Custom CSS (edit .vc-spotBuddy-* classes)",
+        default: "",
+        placeholder: ".vc-spotBuddy-karaoke-lit-inner { color: #fff; }",
+        onChange: () => applyCustomCss(),
+    },
 });
+
+let customStyleEl: HTMLStyleElement | null = null;
+
+function applyCustomCss() {
+    const css = settings.store.customCss?.trim() || "";
+    if (!css) {
+        customStyleEl?.remove();
+        customStyleEl = null;
+        return;
+    }
+    if (!customStyleEl) {
+        customStyleEl = document.createElement("style");
+        customStyleEl.id = "vc-spotBuddy-custom";
+        document.documentElement.appendChild(customStyleEl);
+    }
+    customStyleEl.textContent = css;
+}
 
 type TrackInfo = {
     id: string | null;
@@ -64,7 +88,8 @@ type TrackInfo = {
     url: string | null;
 };
 
-type Line = { t: number; text: string; };
+type Line = { t: number; text: string; words?: { t: number; text: string; }[]; };
+type CardBits = { trackId: string | null; title: string | null; artist: string | null; };
 
 let fluxTrack: any = null;
 let posBase = 0;
@@ -73,19 +98,50 @@ let playing = false;
 let lastApiPos = -1;
 const subs = new Set<() => void>();
 
-function ping() {
-    for (const fn of subs) fn();
+function applyClock(apiPos: number, force = false) {
+    const local = posNow();
+    const drift = Math.abs(apiPos - local);
+
+    if (!force && apiPos === lastApiPos) {
+        if (!playing || drift > 2500) {
+            posBase = apiPos;
+            posAt = Date.now();
+        }
+        return;
+    }
+
+    lastApiPos = apiPos;
+
+    if (!force && playing && drift < 1250) return;
+
+    posBase = apiPos;
+    posAt = Date.now();
 }
 
 function onSpotify(e: any) {
-    if (e?.track) fluxTrack = e.track;
-    if (typeof e?.isPlaying === "boolean") playing = e.isPlaying;
-    if (typeof e?.position === "number") {
-        posBase = e.position;
-        posAt = Date.now();
-        lastApiPos = e.position;
+    let notify = false;
+    if (e?.track) {
+        if (e.track?.id !== fluxTrack?.id) notify = true;
+        fluxTrack = e.track;
     }
-    ping();
+    if (typeof e?.isPlaying === "boolean" && e.isPlaying !== playing) {
+        playing = e.isPlaying;
+        notify = true;
+    } else if (typeof e?.isPlaying === "boolean") {
+        playing = e.isPlaying;
+    }
+    if (typeof e?.position === "number") {
+        applyClock(e.position, !playing || Math.abs(e.position - lastApiPos) > 3000);
+    }
+    if (notify) ping();
+}
+
+let pingTimer: any;
+function ping() {
+    clearTimeout(pingTimer);
+    pingTimer = setTimeout(() => {
+        for (const fn of subs) fn();
+    }, 120);
 }
 
 function posNow() {
@@ -97,10 +153,7 @@ function posNow() {
 function pullApiClock(state: any) {
     if (typeof state?.isPlaying === "boolean") playing = state.isPlaying;
     if (typeof state?.position !== "number") return;
-    if (state.position === lastApiPos) return;
-    lastApiPos = state.position;
-    posBase = state.position;
-    posAt = Date.now();
+    applyClock(state.position, false);
 }
 
 function fmt(ms: number) {
@@ -146,14 +199,18 @@ function readSpotifyApi(): TrackInfo | null {
     }
 }
 
+function spotifyActivity(userId: string) {
+    const list = PresenceStore.getActivities(userId) ?? [];
+    return list.find((x: any) =>
+        x?.name === "Spotify"
+        || x?.sync_id
+        || (typeof x?.party?.id === "string" && x.party.id.includes("spotify"))
+    ) ?? null;
+}
+
 function presenceTrack(userId: string): TrackInfo | null {
     try {
-        const list = PresenceStore.getActivities(userId) ?? [];
-        const a = list.find((x: any) =>
-            x?.name === "Spotify"
-            || x?.sync_id
-            || (typeof x?.party?.id === "string" && x.party.id.includes("spotify"))
-        );
+        const a = spotifyActivity(userId);
         if (!a?.details) return null;
 
         const start = a.timestamps?.start ? Number(a.timestamps.start) : 0;
@@ -185,21 +242,135 @@ function trackFor(userId: string) {
     return presenceTrack(userId);
 }
 
-function userIdForTrack(trackId: string | null) {
+function livePosMs(userId: string) {
     const me = UserStore.getCurrentUser()?.id;
-    if (!trackId) return me ?? null;
-    if (me) {
-        const acts = PresenceStore.getActivities(me) ?? [];
-        if (acts.some((a: any) => a?.sync_id === trackId)) return me;
-    }
+    if (userId === me) return posNow();
+
     try {
-        const ids = RelationshipStore.getFriendIDs?.() ?? [];
-        for (const id of ids) {
-            const acts = PresenceStore.getActivities(id) ?? [];
-            if (acts.some((a: any) => a?.sync_id === trackId)) return id;
+        const a = spotifyActivity(userId);
+        const start = a?.timestamps?.start ? Number(a.timestamps.start) : 0;
+        if (!start) return 0;
+        let pos = Date.now() - start;
+        const end = a?.timestamps?.end ? Number(a.timestamps.end) : 0;
+        if (end > start) pos = Math.min(pos, end - start);
+        return Math.max(0, pos);
+    } catch {
+        return 0;
+    }
+}
+
+function syncOwnClock() {
+    try {
+        const state = SpotifyApi.getPlayerState?.();
+        const t = SpotifyApi.getTrack?.() ?? state?.track;
+        if (t?.id && t.id !== fluxTrack?.id) {
+            fluxTrack = t;
+            ping();
+        }
+        pullApiClock(state);
+    } catch { }
+}
+
+function candidateUserIds(extra?: string | null) {
+    const out = new Set<string>();
+    if (extra) out.add(extra);
+    const me = UserStore.getCurrentUser()?.id;
+    if (me) out.add(me);
+    try {
+        for (const id of RelationshipStore.getFriendIDs?.() ?? []) out.add(id);
+    } catch { }
+    try {
+        const users = UserStore.getUsers?.();
+        if (users) {
+            for (const id of Object.keys(users)) out.add(id);
         }
     } catch { }
-    return me ?? null;
+    return out;
+}
+
+function userIdByPresence(bits: CardBits, prefer: string | null) {
+    const { trackId, title, artist } = bits;
+    let soft: string | null = null;
+
+    for (const id of candidateUserIds(prefer)) {
+        const a = spotifyActivity(id);
+        if (!a) continue;
+        if (trackId && a.sync_id === trackId) return id;
+        if (title && a.details && cleanTitle(a.details) === cleanTitle(title)) {
+            if (!artist || !a.state || cleanArtist(a.state) === cleanArtist(artist))
+                soft = id;
+        }
+    }
+    return soft;
+}
+
+function userIdFromDom(card: HTMLElement) {
+    let el: HTMLElement | null = card;
+    for (let depth = 0; depth < 16 && el; depth++) {
+        for (const img of Array.from(el.querySelectorAll("img[src*='/avatars/']"))) {
+            const m = (img as HTMLImageElement).src.match(/\/avatars\/(\d{17,20})\//);
+            if (m) return m[1];
+        }
+        for (const a of Array.from(el.querySelectorAll('a[href*="/users/"]'))) {
+            const m = (a as HTMLAnchorElement).href.match(/\/users\/(\d{17,20})/);
+            if (m) return m[1];
+        }
+        el = el.parentElement;
+    }
+    return null;
+}
+
+function bitsFromCard(card: HTMLElement): CardBits {
+    const link = card.querySelector(
+        'a[href*="open.spotify.com/track"], a[href*="spotify:track"], a[href*="/track/"]'
+    ) as HTMLAnchorElement | null;
+    const trackId = link?.href.match(/track[/:]([a-zA-Z0-9]+)/)?.[1] ?? null;
+    let title = (link?.textContent || "").trim() || null;
+
+    let artist: string | null = null;
+    if (link) {
+        let n: Element | null = link.parentElement;
+        for (let i = 0; i < 6 && n; i++) {
+            const texts = Array.from(n.querySelectorAll("div, span, a"))
+                .map(x => (x.textContent || "").trim())
+                .filter(t => t && t !== title && !/listening to spotify/i.test(t) && t.length < 80);
+            if (texts.length) {
+                artist = texts.find(t => t !== title) ?? null;
+                break;
+            }
+            n = n.parentElement;
+        }
+    }
+
+    if (!title) {
+        const lines = Array.from(card.querySelectorAll("div, span, h3, h4, a"))
+            .map(x => (x.textContent || "").trim())
+            .filter(t =>
+                t
+                && t.length > 1
+                && t.length < 120
+                && !/^listening to spotify$/i.test(t)
+                && !/^\d{1,2}:\d{2}$/.test(t)
+                && !/^\d{1,2}:\d{2}\s*\/\s*\d{1,2}:\d{2}$/.test(t)
+            );
+        const uniq: string[] = [];
+        for (const t of lines) {
+            if (!uniq.some(u => u === t || u.includes(t) || t.includes(u) && t.length - u.length < 4))
+                uniq.push(t);
+        }
+        title = uniq.find(t => !/^(spotify|activity)$/i.test(t)) || null;
+        artist = uniq.find(t => t !== title) || null;
+    }
+
+    return { trackId, title, artist };
+}
+
+function resolveUserId(card: HTMLElement, bits: CardBits) {
+    const fromDom = userIdFromDom(card);
+    const fromPresence = userIdByPresence(bits, fromDom);
+    if (fromPresence) return fromPresence;
+    if (fromDom) return fromDom;
+    return UserStore.getCurrentUser()?.id ?? null;
 }
 
 const lyricCache = new Map<string, { lines: Line[]; instrumental: boolean; } | null>();
@@ -215,17 +386,43 @@ function cleanTitle(t: string) {
 }
 
 function cleanArtist(a: string) {
-    return a.split(/,|&|\sx\s/i)[0]?.trim() || a.trim();
+    return a.split(/,|&|\sx\s|;/i)[0]?.trim() || a.trim();
+}
+
+function usableLyric(text: string) {
+    const t = text.replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    if (/^[♪♫\-\u2013\u2014.\s]+$/.test(t)) return "";
+    return t;
 }
 
 function parseLrc(raw: string): Line[] {
     const out: Line[] = [];
-    for (const line of raw.split("\n")) {
-        const m = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
+    for (const row of raw.split("\n")) {
+        const m = row.match(/^\[(\d+):(\d+(?:\.\d+)?)\](.*)$/);
         if (!m) continue;
-        const text = m[3].trim();
-        if (!text) continue;
-        out.push({ t: Number(m[1]) * 60 + Number(m[2]), text });
+        const t = Number(m[1]) * 60 + Number(m[2]);
+        const rest = m[3];
+        if (!rest?.trim()) continue;
+
+        const words: { t: number; text: string; }[] = [];
+        const re = /<(\d+):(\d+(?:\.\d+)?)>([^<]*)/g;
+        let wm: RegExpExecArray | null;
+        while ((wm = re.exec(rest)) !== null) {
+            const text = wm[3];
+            if (!text.length) continue;
+            words.push({ t: Number(wm[1]) * 60 + Number(wm[2]), text });
+        }
+
+        if (words.length) {
+            const text = usableLyric(words.map(w => w.text).join(""));
+            if (!text) continue;
+            out.push({ t, text, words });
+        } else {
+            const text = usableLyric(rest);
+            if (!text) continue;
+            out.push({ t, text });
+        }
     }
     return out;
 }
@@ -258,19 +455,42 @@ async function getJson(url: string) {
     return res.json();
 }
 
-async function getLyrics(artist: string, title: string, _album: string, _duration: number) {
+function pickHit(hits: any[], durationMs: number) {
+    const usable = hits.filter((h: any) => h?.syncedLyrics || h?.plainLyrics);
+    if (!usable.length) return hits[0];
+    const target = durationMs > 0 ? durationMs / 1000 : 0;
+    usable.sort((a: any, b: any) => {
+        const as = a.syncedLyrics ? 0 : 1;
+        const bs = b.syncedLyrics ? 0 : 1;
+        if (as !== bs) return as - bs;
+        if (!target) return 0;
+        return Math.abs((a.duration || 0) - target) - Math.abs((b.duration || 0) - target);
+    });
+    return usable[0];
+}
+
+async function getLyrics(artist: string, title: string, _album: string, duration: number) {
     const a = cleanArtist(artist);
     const t = cleanTitle(title);
     if (!t) return null;
 
-    const key = `${a}|${t}`.toLowerCase();
+    const key = `${a}|${t}|${Math.round(duration / 1000)}`.toLowerCase();
     if (lyricCache.has(key)) return lyricCache.get(key)!;
 
     try {
+        const dur = duration > 0 ? String(Math.round(duration / 1000)) : "";
         const tries = [
-            "https://lrclib.net/api/search?" + new URLSearchParams({ track_name: t, artist_name: a }),
+            "https://lrclib.net/api/search?" + new URLSearchParams({
+                track_name: t,
+                artist_name: a,
+                ...(dur ? { duration: dur } : {}),
+            }),
             "https://lrclib.net/api/search?" + new URLSearchParams({ q: `${a} ${t}` }),
-            "https://lrclib.net/api/get?" + new URLSearchParams({ track_name: t, artist_name: a }),
+            "https://lrclib.net/api/get?" + new URLSearchParams({
+                track_name: t,
+                artist_name: a,
+                ...(dur ? { duration: dur } : {}),
+            }),
         ];
 
         for (const url of tries) {
@@ -278,9 +498,7 @@ async function getLyrics(artist: string, title: string, _album: string, _duratio
             if (!json) continue;
 
             if (Array.isArray(json)) {
-                const hit = json.find((h: any) => h.syncedLyrics)
-                    || json.find((h: any) => h.plainLyrics)
-                    || json[0];
+                const hit = pickHit(json, duration);
                 const parsed = fromLrcData(hit);
                 if (parsed) {
                     lyricCache.set(key, parsed);
@@ -304,76 +522,156 @@ async function getLyrics(artist: string, title: string, _album: string, _duratio
 }
 
 function currentLine(lines: Line[], sec: number) {
+    let lo = 0;
+    let hi = lines.length - 1;
     let idx = 0;
-    for (let i = 0; i < lines.length; i++) {
-        if (lines[i].t <= sec) idx = i;
-        else break;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (lines[mid].t <= sec) {
+            idx = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
     }
     return idx;
 }
 
 function lineProgress(lines: Line[], i: number, sec: number) {
-    const start = lines[i]?.t ?? 0;
+    const line = lines[i];
+    if (!line) return 0;
+
+    const words = line.words;
+    if (words?.length) {
+        let lit = 0;
+        let total = 0;
+        for (let w = 0; w < words.length; w++) {
+            const word = words[w];
+            total += word.text.length;
+            const nextT = words[w + 1]?.t ?? lines[i + 1]?.t ?? word.t + 0.35;
+            if (sec >= nextT) {
+                lit += word.text.length;
+            } else if (sec >= word.t) {
+                const p = (sec - word.t) / Math.max(0.04, nextT - word.t);
+                lit += word.text.length * p;
+            }
+        }
+        return Math.min(1, Math.max(0, lit / Math.max(1, total)));
+    }
+
+    const start = line.t;
     const end = lines[i + 1]?.t ?? start + 4;
-    const span = Math.max(0.08, end - start);
-    return Math.min(1, Math.max(0, (sec - start) / span));
+    return Math.min(1, Math.max(0, (sec - start) / Math.max(0.05, end - start)));
 }
 
-const LINE_H = 30;
+const LINE_H = 34;
+const TARGET_FPS = 60;
+const FRAME_MS = Math.round(1000 / TARGET_FPS);
+
+function runFpsLoop(paint: () => void) {
+    let dead = false;
+    let worker: Worker | null = null;
+    let fallback: ReturnType<typeof setInterval> | null = null;
+    let raf = 0;
+    let pending = false;
+
+    const doPaint = () => {
+        if (dead || pending) return;
+        pending = true;
+        raf = requestAnimationFrame(() => {
+            pending = false;
+            if (dead) return;
+            try { paint(); } catch { }
+        });
+    };
+
+    try {
+        const src = `var i=setInterval(function(){postMessage(1)},${FRAME_MS});onmessage=function(e){if(e.data==="x")clearInterval(i)};`;
+        worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+        worker.onmessage = () => doPaint();
+    } catch {
+        fallback = setInterval(doPaint, FRAME_MS);
+    }
+
+    doPaint();
+
+    return () => {
+        dead = true;
+        try { worker?.postMessage("x"); } catch { }
+        worker?.terminate();
+        worker = null;
+        if (fallback != null) clearInterval(fallback);
+        cancelAnimationFrame(raf);
+    };
+}
+
+function neighborText(lines: Line[], i: number, dir: -1 | 1, cur: string) {
+    for (let j = i + dir; j >= 0 && j < lines.length; j += dir) {
+        const t = lines[j]?.text?.trim();
+        if (t && t !== cur) return t;
+    }
+    return "\u00a0";
+}
 
 function FancyLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }) {
     const [i, setI] = useState(() => currentLine(lines, getSec()));
     const iRef = useRef(i);
     const litRef = useRef<HTMLSpanElement>(null);
+    const starRef = useRef<HTMLSpanElement>(null);
+    const onRef = useRef(false);
 
     useEffect(() => {
         iRef.current = -1;
-        let raf = 0;
-        const tick = () => {
+        onRef.current = false;
+
+        return runFpsLoop(() => {
             const sec = getSec();
             const idx = currentLine(lines, sec);
-            const lit = litRef.current;
-            if (lit) lit.style.width = `${lineProgress(lines, idx, sec) * 100}%`;
             if (idx !== iRef.current) {
                 iRef.current = idx;
                 setI(idx);
             }
-            raf = requestAnimationFrame(tick);
-        };
-        raf = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(raf);
+
+            const p = Math.min(1, Math.max(0, lineProgress(lines, idx, sec)));
+            const lit = litRef.current;
+            const star = starRef.current;
+            if (lit) lit.style.width = (p * 100).toFixed(3) + "%";
+            if (star) {
+                star.style.left = (p * 100).toFixed(3) + "%";
+                const on = !!lines[idx]?.text?.trim() && p > 0.015 && p < 0.985;
+                if (on !== onRef.current) {
+                    onRef.current = on;
+                    star.classList.toggle(cl("on"), on);
+                }
+            }
+        });
     }, [lines, getSec]);
+
+    const cur = lines[i]?.text?.trim() || "\u00a0";
+    const prev = neighborText(lines, i, -1, cur);
+    const next = neighborText(lines, i, 1, cur);
+    const hasCur = cur !== "\u00a0";
 
     return (
         <div className={cl("lyrics", "fancy")}>
-            {[-2, -1, 0, 1, 2].map(d => {
-                const n = i + d;
-                const text = n >= 0 && n < lines.length ? (lines[n].text || "\u00a0") : "\u00a0";
-                let kind = "near";
-                if (d === 0) kind = "cur";
-                else if (d === -1) kind = "prev";
-                else if (d === 1) kind = "next";
-                else if (Math.abs(d) >= 2) kind = "far";
-
-                if (d === 0) {
-                    return (
-                        <div key="cur" className={cl("line", "cur")} style={{ height: LINE_H }}>
-                            <span className={cl("karaoke")}>
-                                <span className={cl("karaoke-dim")}>{text}</span>
-                                <span className={cl("karaoke-lit")} ref={litRef}>
-                                    <span className={cl("karaoke-lit-inner")}>{text}</span>
-                                </span>
+            <div className={cl("line", "prev")} style={{ height: LINE_H }}>{prev}</div>
+            <div className={cl("line", "cur")} style={{ height: LINE_H }}>
+                <span className={cl("karaoke")}>
+                    <span className={cl("karaoke-dim")}>{cur}</span>
+                    {hasCur && (
+                        <>
+                            <span className={cl("karaoke-lit")} ref={litRef} aria-hidden="true" style={{ width: "0%" }}>
+                                <span className={cl("karaoke-lit-inner")}>{cur}</span>
                             </span>
-                        </div>
-                    );
-                }
-
-                return (
-                    <div key={d} className={cl("line", kind)} style={{ height: LINE_H }}>
-                        {text}
-                    </div>
-                );
-            })}
+                            <span className={cl("star")} ref={starRef} aria-hidden="true" style={{ left: "0%" }}>
+                                <span className={cl("star-trail")} />
+                                <span className={cl("star-core")} />
+                            </span>
+                        </>
+                    )}
+                </span>
+            </div>
+            <div className={cl("line", "next")} style={{ height: LINE_H }}>{next}</div>
         </div>
     );
 }
@@ -382,18 +680,11 @@ function PlainLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }
     const [i, setI] = useState(() => currentLine(lines, getSec()));
 
     useEffect(() => {
-        let raf = 0;
-        let last = -1;
-        const tick = () => {
+        const iv = setInterval(() => {
             const idx = currentLine(lines, getSec());
-            if (idx !== last) {
-                last = idx;
-                setI(idx);
-            }
-            raf = requestAnimationFrame(tick);
-        };
-        raf = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(raf);
+            setI(prev => (prev === idx ? prev : idx));
+        }, 200);
+        return () => clearInterval(iv);
     }, [lines, getSec]);
 
     return (
@@ -409,25 +700,22 @@ function Panel({ userId }: { userId: string; }) {
     const [, setN] = useState(0);
     const [lyrics, setLyrics] = useState<{ lines: Line[]; instrumental: boolean; } | null | undefined>();
     const offsetRef = useRef(settings.store.syncOffsetMs || 0);
+    const userRef = useRef(userId);
+    const timeRef = useRef<HTMLDivElement>(null);
+    const fillRef = useRef<HTMLDivElement>(null);
     offsetRef.current = settings.store.syncOffsetMs || 0;
+    userRef.current = userId;
 
-    const getSec = useRef(() => {
-        const t = trackFor(userId);
-        return Math.max(0, (t?.position ?? 0) + offsetRef.current) / 1000;
-    });
-    getSec.current = () => {
-        const t = trackFor(userId);
-        return Math.max(0, (t?.position ?? 0) + offsetRef.current) / 1000;
-    };
-    const readSec = useRef(() => getSec.current()).current;
+    const readSec = useRef(() =>
+        Math.max(0, livePosMs(userRef.current) + offsetRef.current) / 1000
+    ).current;
 
     useEffect(() => {
-        const fn = () => setN(n => n + 1);
-        subs.add(fn);
-        const iv = setInterval(fn, 500);
+        const onPing = () => setN(n => n + 1);
+        subs.add(onPing);
+        syncOwnClock();
         return () => {
-            subs.delete(fn);
-            clearInterval(iv);
+            subs.delete(onPing);
         };
     }, []);
 
@@ -440,12 +728,27 @@ function Panel({ userId }: { userId: string; }) {
             setLyrics(null);
             return;
         }
-        const artist = info.artists.split(",")[0]?.trim() || info.artists;
+        const artist = info.artists.split(/,|;/)[0]?.trim() || info.artists;
         getLyrics(artist, info.title, info.album, info.duration).then(r => {
             if (!dead) setLyrics(r);
         });
         return () => { dead = true; };
-    }, [info?.id, info?.title, info?.artists, info?.album, info?.duration]);
+    }, [userId, info?.id, info?.title, info?.artists, info?.album, info?.duration]);
+
+    useEffect(() => {
+        if (!info) return;
+        return runFpsLoop(() => {
+            const pos = Math.max(0, livePosMs(userRef.current) + offsetRef.current);
+            const timeEl = timeRef.current;
+            if (timeEl && info.duration > 0) {
+                const label = `${fmt(pos)} / ${fmt(info.duration)}${info.playing ? "" : " (paused)"}`;
+                if (timeEl.textContent !== label) timeEl.textContent = label;
+            }
+            const fill = fillRef.current;
+            if (fill && info.duration > 0)
+                fill.style.width = `${Math.min(100, (pos / info.duration) * 100).toFixed(3)}%`;
+        });
+    }, [info?.id, info?.duration, info?.playing]);
 
     if (!info) {
         return (
@@ -456,9 +759,6 @@ function Panel({ userId }: { userId: string; }) {
         );
     }
 
-    const pos = Math.max(0, info.position + offsetRef.current);
-    const pct = info.duration > 0 ? Math.min(100, (pos / info.duration) * 100) : 0;
-
     let lyricEl: any = null;
     if (settings.store.showLyrics) {
         if (lyrics === undefined) lyricEl = <div className={cl("muted")}>loading lyrics...</div>;
@@ -466,9 +766,9 @@ function Panel({ userId }: { userId: string; }) {
         else if (lyrics.instrumental) lyricEl = <div className={cl("muted")}>instrumental</div>;
         else if (!lyrics.lines.length) lyricEl = <div className={cl("muted")}>no lyrics found</div>;
         else if (settings.store.fancyLyrics) {
-            lyricEl = <FancyLyrics lines={lyrics.lines} getSec={readSec} />;
+            lyricEl = <FancyLyrics key={userId + ":" + (info.id || info.title)} lines={lyrics.lines} getSec={readSec} />;
         } else {
-            lyricEl = <PlainLyrics lines={lyrics.lines} getSec={readSec} />;
+            lyricEl = <PlainLyrics key={userId + ":" + (info.id || info.title)} lines={lyrics.lines} getSec={readSec} />;
         }
     }
 
@@ -481,8 +781,8 @@ function Panel({ userId }: { userId: string; }) {
                     {info.artists && <div className={cl("sub")}>{info.artists}</div>}
                     {info.album && <div className={cl("sub")}>{info.album}</div>}
                     {info.duration > 0 && (
-                        <div className={cl("sub")}>
-                            {fmt(pos)} / {fmt(info.duration)}{info.playing ? "" : " (paused)"}
+                        <div className={cl("sub")} ref={timeRef}>
+                            {fmt(0)} / {fmt(info.duration)}
                         </div>
                     )}
                 </div>
@@ -490,7 +790,7 @@ function Panel({ userId }: { userId: string; }) {
 
             {info.duration > 0 && (
                 <div className={cl("bar")}>
-                    <div className={cl("fill")} style={{ width: pct + "%" }} />
+                    <div className={cl("fill")} ref={fillRef} style={{ width: "0%" }} />
                 </div>
             )}
 
@@ -526,94 +826,238 @@ function Panel({ userId }: { userId: string; }) {
 
 const SafePanel = ErrorBoundary.wrap(Panel, { noop: true });
 
-type Mount = { root: ReturnType<typeof createRoot>; host: HTMLElement; };
+type Mount = { root: ReturnType<typeof createRoot>; host: HTMLElement; userId: string; trackKey: string; };
 const mounts = new Map<Element, Mount>();
+
+let scanning = false;
+let selfMutating = false;
+
+function isShown(el: HTMLElement) {
+    if (!el.isConnected) return false;
+
+    const panel = el.closest('[role="tabpanel"]') as HTMLElement | null;
+    if (panel) {
+        if (panel.hidden || panel.getAttribute("aria-hidden") === "true") return false;
+        const ps = getComputedStyle(panel);
+        if (ps.display === "none" || ps.visibility === "hidden") return false;
+        if (panel.getBoundingClientRect().height < 8) return false;
+    }
+
+    let cur: HTMLElement | null = el;
+    for (let i = 0; i < 12 && cur; i++) {
+        if (cur.hidden) return false;
+        const st = getComputedStyle(cur);
+        if (st.display === "none" || st.visibility === "hidden") return false;
+        cur = cur.parentElement;
+    }
+
+    const r = el.getBoundingClientRect();
+    return r.width >= 8 && r.height >= 8;
+}
+
+function looksLikeSpotifyCard(el: HTMLElement) {
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (w < 180 || h < 64 || h > 480) return false;
+    const txt = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!/listening to spotify/i.test(txt)) return false;
+    if (txt.length > 600) return false;
+    if (/recent activity/i.test(txt)) return false;
+    const hasTime = /\d{1,2}:\d{2}/.test(txt);
+    const hasArt = !!el.querySelector("img");
+    const hasLink = !!el.querySelector('a[href*="spotify"], a[href*="/track/"]');
+    return hasTime || hasArt || hasLink;
+}
 
 function spotifyCardFromEl(start: HTMLElement) {
     let el: HTMLElement | null = start;
-    for (let i = 0; i < 10 && el; i++) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 180 && rect.height > 48 && rect.height < 280) {
-            const txt = el.textContent || "";
-            if (/spotify/i.test(txt) || el.querySelector?.('a[href*="spotify"]'))
-                return el;
-        }
+    let best: HTMLElement | null = null;
+    for (let i = 0; i < 16 && el; i++) {
+        if (looksLikeSpotifyCard(el)) best = el;
+        if (el.offsetHeight > 800) break;
         el = el.parentElement;
     }
-    return start;
+    return best;
 }
 
-function findSpotifyCards(): HTMLElement[] {
+function profileRoots(): HTMLElement[] {
+    return ([
+        ...document.querySelectorAll(
+            '[role="dialog"], [class*="userPopout"], [class*="UserProfile"], [class*="focusLock"]'
+        ),
+    ] as HTMLElement[]).filter(r => isShown(r));
+}
+
+function findListeningSeeds(root: ParentNode): HTMLElement[] {
     const out: HTMLElement[] = [];
     const seen = new Set<HTMLElement>();
 
-    const add = (el: HTMLElement | null | undefined) => {
+    const push = (el: HTMLElement | null | undefined) => {
         if (!el || seen.has(el)) return;
-        const card = spotifyCardFromEl(el);
-        if (!card || seen.has(card)) return;
-        seen.add(card);
-        out.push(card);
+        if (el.closest(".vc-spotBuddy-host")) return;
+        seen.add(el);
+        out.push(el);
     };
 
-    document.querySelectorAll('a[href*="open.spotify.com"], a[href^="spotify:"]').forEach(a => {
-        add(a as HTMLElement);
-    });
-
-    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let node: Node | null;
     while ((node = walk.nextNode())) {
-        const t = node.textContent || "";
-        if (!/listening to spotify/i.test(t)) continue;
-        add(node.parentElement);
+        const t = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (!t || t.length > 48) continue;
+        if (/listening to spotify/i.test(t) || /^listening to$/i.test(t))
+            push(node.parentElement);
     }
+
+    const scope = root instanceof Element ? root : document;
+    scope.querySelectorAll(
+        'img[src*="scdn.co"], img[src*="i.scdn.co"], a[href*="open.spotify.com"], a[href*="spotify:track"], a[href*="/track/"]'
+    ).forEach(n => push(n as HTMLElement));
 
     return out;
 }
 
-function scan() {
-    const cards = findSpotifyCards();
-    const alive = new Set<Element>();
+function findSpotifyCards(): HTMLElement[] {
+    const raw: HTMLElement[] = [];
+    const seen = new Set<HTMLElement>();
+    const roots = profileRoots();
+    if (!roots.length) return [];
 
-    for (const card of cards) {
-        if (card.closest(".vc-spotBuddy-host")) continue;
-        if (mounts.has(card)) {
-            alive.add(card);
-            continue;
+    for (const root of roots) {
+        for (const seed of findListeningSeeds(root)) {
+            const card = spotifyCardFromEl(seed);
+            if (!card || seen.has(card)) continue;
+            if (card.closest(".vc-spotBuddy-host") || card.closest(".vc-spotBuddy-card")) continue;
+            if (!isShown(card)) continue;
+            seen.add(card);
+            raw.push(card);
         }
+    }
 
-        let trackId: string | null = null;
-        const link = card.querySelector('a[href*="track/"]') as HTMLAnchorElement | null;
-        if (link?.href) {
-            trackId = link.href.match(/track[/:]([a-zA-Z0-9]+)/)?.[1] ?? null;
+    return raw.filter(c => !raw.some(o => o !== c && o.contains(c)));
+}
+
+function withOwnDom(fn: () => void) {
+    selfMutating = true;
+    try {
+        fn();
+    } finally {
+        requestAnimationFrame(() => { selfMutating = false; });
+    }
+}
+
+function unmount(card: Element) {
+    const mount = mounts.get(card);
+    if (!mount) return;
+    withOwnDom(() => {
+        try { mount.root.unmount(); } catch { }
+        mount.host.remove();
+    });
+    mounts.delete(card);
+}
+
+function mountOn(card: HTMLElement, userId: string, trackKey: string) {
+    const existing = mounts.get(card);
+    if (
+        existing
+        && existing.userId === userId
+        && document.contains(existing.host)
+        && existing.host.previousElementSibling === card
+    ) {
+        existing.trackKey = trackKey;
+        return;
+    }
+    if (existing) unmount(card);
+
+    withOwnDom(() => {
+        let sib = card.nextElementSibling;
+        while (sib?.classList?.contains("vc-spotBuddy-host")) {
+            const orphan = sib as HTMLElement;
+            sib = sib.nextElementSibling;
+            if (![...mounts.values()].some(m => m.host === orphan)) orphan.remove();
         }
-        const userId = userIdForTrack(trackId) ?? UserStore.getCurrentUser()?.id;
-        if (!userId) continue;
 
         const host = document.createElement("div");
         host.className = "vc-spotBuddy-host";
+        host.dataset.userId = userId;
         card.insertAdjacentElement("afterend", host);
 
         const root = createRoot(host);
         root.render(<SafePanel userId={userId} />);
-        mounts.set(card, { root, host });
-        alive.add(card);
-    }
+        mounts.set(card, { root, host, userId, trackKey });
+    });
+}
 
-    for (const [card, mount] of mounts) {
-        if (!document.contains(card) || !alive.has(card)) {
-            mount.root.unmount();
-            mount.host.remove();
-            mounts.delete(card);
+function scan() {
+    if (scanning || selfMutating) return;
+    scanning = true;
+    try {
+        const cards = findSpotifyCards();
+        const alive = new Set<Element>();
+        const me = UserStore.getCurrentUser()?.id;
+
+        for (const card of cards) {
+            const bits = bitsFromCard(card);
+            const userId = resolveUserId(card, bits) || me;
+            if (!userId) continue;
+
+            const trackKey = bits.trackId || `${bits.title || ""}|${bits.artist || ""}`;
+            const existing = mounts.get(card);
+
+            if (
+                existing
+                && existing.userId === userId
+                && document.contains(existing.host)
+                && existing.host.previousElementSibling === card
+            ) {
+                existing.trackKey = trackKey;
+                alive.add(card);
+                continue;
+            }
+
+            mountOn(card, userId, trackKey);
+            alive.add(card);
         }
+
+        for (const [card] of mounts) {
+            if (!document.contains(card)) {
+                unmount(card);
+                continue;
+            }
+            if (alive.has(card)) continue;
+            if (!isShown(card as HTMLElement)) unmount(card);
+        }
+    } finally {
+        scanning = false;
     }
 }
 
 let obs: MutationObserver | null = null;
 let scanTimer: any;
+let clockIv: any;
+let scanIv: any;
+let clickScan: ((e: Event) => void) | null = null;
 
-function queueScan() {
+function queueScan(force = false) {
+    if (selfMutating && !force) return;
     clearTimeout(scanTimer);
-    scanTimer = setTimeout(scan, 200);
+    scanTimer = setTimeout(scan, 280);
+}
+
+function onMutations(muts: MutationRecord[]) {
+    if (selfMutating) return;
+    for (const m of muts) {
+        const nodes = [...m.addedNodes, ...m.removedNodes];
+        if (
+            nodes.length
+            && nodes.every(n =>
+                n instanceof Element
+                && (n.classList?.contains("vc-spotBuddy-host") || !!(n as Element).closest?.(".vc-spotBuddy-host"))
+            )
+        ) continue;
+        if (m.target instanceof Element && m.target.closest(".vc-spotBuddy-host")) continue;
+        queueScan();
+        return;
+    }
 }
 
 export default definePlugin({
@@ -625,21 +1069,36 @@ export default definePlugin({
     start() {
         FluxDispatcher.subscribe("SPOTIFY_PLAYER_STATE", onSpotify);
         FluxDispatcher.subscribe("PRESENCE_UPDATES", ping);
-        obs = new MutationObserver(queueScan);
+        applyCustomCss();
+        obs = new MutationObserver(onMutations);
         obs.observe(document.body, { childList: true, subtree: true });
-        queueScan();
+        clickScan = (e: Event) => {
+            const t = e.target as HTMLElement | null;
+            if (!t) return;
+            if (t.closest?.('[role="tab"], [class*="tabBar"], [class*="TabBar"]'))
+                queueScan(true);
+        };
+        document.addEventListener("click", clickScan, true);
+        clockIv = setInterval(syncOwnClock, 400);
+        scanIv = setInterval(() => queueScan(true), 2500);
+        syncOwnClock();
+        queueScan(true);
     },
 
     stop() {
         FluxDispatcher.unsubscribe("SPOTIFY_PLAYER_STATE", onSpotify);
         FluxDispatcher.unsubscribe("PRESENCE_UPDATES", ping);
+        customStyleEl?.remove();
+        customStyleEl = null;
         obs?.disconnect();
         obs = null;
+        if (clickScan) document.removeEventListener("click", clickScan, true);
+        clickScan = null;
         clearTimeout(scanTimer);
-        for (const [, mount] of mounts) {
-            mount.root.unmount();
-            mount.host.remove();
-        }
-        mounts.clear();
+        clearInterval(clockIv);
+        clearInterval(scanIv);
+        clockIv = null;
+        scanIv = null;
+        for (const [card] of mounts) unmount(card);
     },
 });
