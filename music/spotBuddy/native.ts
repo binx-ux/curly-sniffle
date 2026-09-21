@@ -14,10 +14,11 @@ export async function fetchText(_: IpcMainInvokeEvent, url: string) {
 
     try {
         const res = await fetch(url, {
-            headers: { "User-Agent": "Vencord-SpotBuddy" },
+            headers: { "User-Agent": "Vencord SpotBuddy" }, // lrclib wants a ua
         });
         return { ok: res.ok, status: res.status, text: await res.text() };
     } catch (e) {
+        // network died or something
         return { ok: false, status: -1, text: String(e) };
     }
 }

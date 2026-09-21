@@ -32,29 +32,29 @@ const SpotifyApi = findByPropsLazy("getPlayerState", "getTrack");
 const settings = definePluginSettings({
     showLyrics: {
         type: OptionType.BOOLEAN,
-        description: "Show lyrics",
+        description: "show lyrics",
         default: true,
     },
     showShareButton: {
         type: OptionType.BOOLEAN,
-        description: "Show share button",
+        description: "share btn",
         default: true,
     },
     syncOffsetMs: {
         type: OptionType.NUMBER,
-        description: "Lyric offset in ms (negative = earlier, positive = later)",
+        description: "offset lyrics in ms (neg = earlier)",
         default: 0,
     },
     fancyLyrics: {
         type: OptionType.BOOLEAN,
-        description: "Fancy lyric animation",
+        description: "fancy lyrics (the glow thing)",
         default: true,
     },
     customCss: {
         type: OptionType.STRING,
-        description: "Custom CSS (edit .vc-spotBuddy-* classes)",
+        description: "dump custom css here",
         default: "",
-        placeholder: ".vc-spotBuddy-karaoke-lit-inner { color: #fff; }",
+        placeholder: ".vc-spotBuddy-karaoke-lit-inner { color: #fff }",
         onChange: () => applyCustomCss(),
     },
 });
@@ -88,22 +88,22 @@ type TrackInfo = {
     url: string | null;
 };
 
-type Line = { t: number; text: string; words?: { t: number; text: string; }[]; };
-type CardBits = { trackId: string | null; title: string | null; artist: string | null; };
+type Line = { t: number; text: string; words?: { t: number; text: string }[] }
+type CardBits = { trackId: string | null; title: string | null; artist: string | null }
 
-let fluxTrack: any = null;
+let fluxTrack: any = null; // whatever discord gives us
 let posBase = 0;
 let posAt = 0;
 let playing = false;
 let lastApiPos = -1;
-const subs = new Set<() => void>();
+const listeners = new Set<() => void>();
 
-function applyClock(apiPos: number, force = false) {
+function fixClock(apiPos: number, force = false) {
     const local = posNow();
     const drift = Math.abs(apiPos - local);
 
-    if (!force && apiPos === lastApiPos) {
-        if (!playing || drift > 2500) {
+    if (!force && apiPos == lastApiPos) { // loose ok
+        if (!playing || drift > 2500) { // yank if way off
             posBase = apiPos;
             posAt = Date.now();
         }
@@ -112,13 +112,14 @@ function applyClock(apiPos: number, force = false) {
 
     lastApiPos = apiPos;
 
-    if (!force && playing && drift < 1250) return;
+    if (!force && playing && drift < 1200) return; // close enough
 
     posBase = apiPos;
     posAt = Date.now();
 }
 
 function onSpotify(e: any) {
+    // flux spam
     let notify = false;
     if (e?.track) {
         if (e.track?.id !== fluxTrack?.id) notify = true;
@@ -131,17 +132,17 @@ function onSpotify(e: any) {
         playing = e.isPlaying;
     }
     if (typeof e?.position === "number") {
-        applyClock(e.position, !playing || Math.abs(e.position - lastApiPos) > 3000);
+        fixClock(e.position, !playing || Math.abs(e.position - lastApiPos) > 3000);
     }
-    if (notify) ping();
+    if (notify) bump();
 }
 
-let pingTimer: any;
-function ping() {
-    clearTimeout(pingTimer);
-    pingTimer = setTimeout(() => {
-        for (const fn of subs) fn();
-    }, 120);
+let bumpT: any;
+function bump() {
+    clearTimeout(bumpT);
+    bumpT = setTimeout(() => {
+        for (const fn of listeners) fn();
+    }, 100);
 }
 
 function posNow() {
@@ -153,17 +154,19 @@ function posNow() {
 function pullApiClock(state: any) {
     if (typeof state?.isPlaying === "boolean") playing = state.isPlaying;
     if (typeof state?.position !== "number") return;
-    applyClock(state.position, false);
+    fixClock(state.position, false);
 }
 
-function fmt(ms: number) {
+function fmt(ms: number) { // mm:ss
     const s = Math.floor(ms / 1000);
-    return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+    const m = Math.floor(s / 60);
+    const ss = (s % 60).toString().padStart(2, "0");
+    return m + ":" + ss;
 }
 
 function artUrl(raw?: string) {
     if (!raw) return null;
-    if (raw.includes("https://")) return raw;
+    if (raw.includes("https://")) return raw; // already a url??
     const id = raw.split(":").pop();
     return id ? `https://i.scdn.co/image/${id}` : null;
 }
@@ -194,7 +197,8 @@ function readSpotifyApi(): TrackInfo | null {
         if (!t) return null;
         pullApiClock(state);
         return fromTrack(t, posNow(), playing);
-    } catch {
+    } catch (e) {
+        // api missing sometimes
         return fromTrack(fluxTrack, posNow(), playing);
     }
 }
@@ -238,7 +242,10 @@ function presenceTrack(userId: string): TrackInfo | null {
 
 function trackFor(userId: string) {
     const me = UserStore.getCurrentUser()?.id;
-    if (userId === me) return readSpotifyApi() ?? presenceTrack(userId);
+    // own profile gets the real player state
+    if (userId === me) {
+        return readSpotifyApi() ?? presenceTrack(userId);
+    }
     return presenceTrack(userId);
 }
 
@@ -265,10 +272,10 @@ function syncOwnClock() {
         const t = SpotifyApi.getTrack?.() ?? state?.track;
         if (t?.id && t.id !== fluxTrack?.id) {
             fluxTrack = t;
-            ping();
+            bump();
         }
         pullApiClock(state);
-    } catch { }
+    } catch (e) { /* whatever */ }
 }
 
 function candidateUserIds(extra?: string | null) {
@@ -278,13 +285,13 @@ function candidateUserIds(extra?: string | null) {
     if (me) out.add(me);
     try {
         for (const id of RelationshipStore.getFriendIDs?.() ?? []) out.add(id);
-    } catch { }
+    } catch (e) { /* whatever */ }
     try {
         const users = UserStore.getUsers?.();
         if (users) {
             for (const id of Object.keys(users)) out.add(id);
         }
-    } catch { }
+    } catch (e) { /* whatever */ }
     return out;
 }
 
@@ -373,9 +380,11 @@ function resolveUserId(card: HTMLElement, bits: CardBits) {
     return UserStore.getCurrentUser()?.id ?? null;
 }
 
-const lyricCache = new Map<string, { lines: Line[]; instrumental: boolean; } | null>();
+// tiny cache so we dont hammer lrclib
+const lyricCache = new Map<string, { lines: Line[]; instrumental: boolean } | null>();
 
 function cleanTitle(t: string) {
+    // strip feat junk so search hits better
     return t
         .replace(/\u2026/g, "...")
         .replace(/\.\.\.$/, "")
@@ -386,12 +395,14 @@ function cleanTitle(t: string) {
 }
 
 function cleanArtist(a: string) {
+    // first artist only for search
     return a.split(/,|&|\sx\s|;/i)[0]?.trim() || a.trim();
 }
 
 function usableLyric(text: string) {
     const t = text.replace(/\s+/g, " ").trim();
     if (!t) return "";
+    // skip empty / music note junk
     if (/^[♪♫\-\u2013\u2014.\s]+$/.test(t)) return "";
     return t;
 }
@@ -513,7 +524,7 @@ async function getLyrics(artist: string, title: string, _album: string, duration
             }
         }
     } catch (e) {
-        console.error("[SpotBuddy] lyrics fetch failed", e);
+        console.error("spotbuddy lyrics broke", e);
         return null;
     }
 
@@ -522,6 +533,7 @@ async function getLyrics(artist: string, title: string, _album: string, duration
 }
 
 function currentLine(lines: Line[], sec: number) {
+    // binary search bc linear was laggy on long songs
     let lo = 0;
     let hi = lines.length - 1;
     let idx = 0;
@@ -564,9 +576,9 @@ function lineProgress(lines: Line[], i: number, sec: number) {
     return Math.min(1, Math.max(0, (sec - start) / Math.max(0.05, end - start)));
 }
 
-const LINE_H = 34;
-const TARGET_FPS = 60;
-const FRAME_MS = Math.round(1000 / TARGET_FPS);
+const lineH = 34; // feels right
+const frameMs = 16; // ~60
+const MAGIC_OFFSET = 0; // i kept tweaking this lol
 
 function runFpsLoop(paint: () => void) {
     let dead = false;
@@ -581,23 +593,24 @@ function runFpsLoop(paint: () => void) {
         raf = requestAnimationFrame(() => {
             pending = false;
             if (dead) return;
-            try { paint(); } catch { }
+            try { paint(); } catch (e) { /* whatever */ }
         });
     };
 
     try {
-        const src = `var i=setInterval(function(){postMessage(1)},${FRAME_MS});onmessage=function(e){if(e.data==="x")clearInterval(i)};`;
+        const src = `var i=setInterval(function(){postMessage(1)},${frameMs});onmessage=function(e){if(e.data==="x")clearInterval(i)};`;
         worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
         worker.onmessage = () => doPaint();
-    } catch {
-        fallback = setInterval(doPaint, FRAME_MS);
+    } catch (e) {
+        // workers blocked? whatever
+        fallback = setInterval(doPaint, frameMs);
     }
 
     doPaint();
 
     return () => {
         dead = true;
-        try { worker?.postMessage("x"); } catch { }
+        try { worker?.postMessage("x"); } catch (e) { /* whatever */ }
         worker?.terminate();
         worker = null;
         if (fallback != null) clearInterval(fallback);
@@ -635,9 +648,9 @@ function FancyLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }
             const p = Math.min(1, Math.max(0, lineProgress(lines, idx, sec)));
             const lit = litRef.current;
             const star = starRef.current;
-            if (lit) lit.style.width = (p * 100).toFixed(3) + "%";
+            if (lit) lit.style.width = (p * 100).toFixed(2) + "%"; // 3 was overkill
             if (star) {
-                star.style.left = (p * 100).toFixed(3) + "%";
+                star.style.left = (p * 100).toFixed(2) + "%";
                 const on = !!lines[idx]?.text?.trim() && p > 0.015 && p < 0.985;
                 if (on !== onRef.current) {
                     onRef.current = on;
@@ -654,8 +667,8 @@ function FancyLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }
 
     return (
         <div className={cl("lyrics", "fancy")}>
-            <div className={cl("line", "prev")} style={{ height: LINE_H }}>{prev}</div>
-            <div className={cl("line", "cur")} style={{ height: LINE_H }}>
+            <div className={cl("line", "prev")} style={{ height: lineH }}>{prev}</div>
+            <div className={cl("line", "cur")} style={{ height: lineH }}>
                 <span className={cl("karaoke")}>
                     <span className={cl("karaoke-dim")}>{cur}</span>
                     {hasCur && (
@@ -671,7 +684,7 @@ function FancyLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }
                     )}
                 </span>
             </div>
-            <div className={cl("line", "next")} style={{ height: LINE_H }}>{next}</div>
+            <div className={cl("line", "next")} style={{ height: lineH }}>{next}</div>
         </div>
     );
 }
@@ -683,7 +696,7 @@ function PlainLyrics({ lines, getSec }: { lines: Line[]; getSec: () => number; }
         const iv = setInterval(() => {
             const idx = currentLine(lines, getSec());
             setI(prev => (prev === idx ? prev : idx));
-        }, 200);
+        }, 180); // plain mode doesnt need 60fps
         return () => clearInterval(iv);
     }, [lines, getSec]);
 
@@ -707,15 +720,15 @@ function Panel({ userId }: { userId: string; }) {
     userRef.current = userId;
 
     const readSec = useRef(() =>
-        Math.max(0, livePosMs(userRef.current) + offsetRef.current) / 1000
+        Math.max(0, livePosMs(userRef.current) + offsetRef.current + MAGIC_OFFSET) / 1000
     ).current;
 
     useEffect(() => {
         const onPing = () => setN(n => n + 1);
-        subs.add(onPing);
+        listeners.add(onPing);
         syncOwnClock();
         return () => {
-            subs.delete(onPing);
+            listeners.delete(onPing);
         };
     }, []);
 
@@ -746,7 +759,7 @@ function Panel({ userId }: { userId: string; }) {
             }
             const fill = fillRef.current;
             if (fill && info.duration > 0)
-                fill.style.width = `${Math.min(100, (pos / info.duration) * 100).toFixed(3)}%`;
+                fill.style.width = Math.min(100, (pos / info.duration) * 100).toFixed(2) + "%";
         });
     }, [info?.id, info?.duration, info?.playing]);
 
@@ -754,17 +767,17 @@ function Panel({ userId }: { userId: string; }) {
         return (
             <div className={cl("card")}>
                 <div className={cl("title")}>SpotBuddy</div>
-                <div className={cl("sub")}>waiting for spotify...</div>
+                <div className={cl("sub")}>waiting for spotify..</div>
             </div>
         );
     }
 
     let lyricEl: any = null;
     if (settings.store.showLyrics) {
-        if (lyrics === undefined) lyricEl = <div className={cl("muted")}>loading lyrics...</div>;
-        else if (!lyrics) lyricEl = <div className={cl("muted")}>no lyrics found</div>;
+        if (lyrics === undefined) lyricEl = <div className={cl("muted")}>loading..</div>;
+        else if (!lyrics) lyricEl = <div className={cl("muted")}>no lyrics lol</div>;
         else if (lyrics.instrumental) lyricEl = <div className={cl("muted")}>instrumental</div>;
-        else if (!lyrics.lines.length) lyricEl = <div className={cl("muted")}>no lyrics found</div>;
+        else if (!lyrics.lines.length) lyricEl = <div className={cl("muted")}>no lyrics lol</div>;
         else if (settings.store.fancyLyrics) {
             lyricEl = <FancyLyrics key={userId + ":" + (info.id || info.title)} lines={lyrics.lines} getSec={readSec} />;
         } else {
@@ -805,18 +818,18 @@ function Panel({ userId }: { userId: string; }) {
                             const ch = SelectedChannelStore.getChannelId();
                             if (!ch) return;
                             sendMessage(ch, {
-                                content: `**${info.title}**` + (info.artists ? ` by ${info.artists}` : "") + ` ${info.url}`,
+                                content: "**" + info.title + "**" + (info.artists ? " by " + info.artists : "") + " " + info.url,
                             });
                         }}
                     >
-                        Share
+                        share
                     </Button>
                     <Button
                         size="small"
                         look={Button.Looks.LINK}
                         onClick={() => VencordNative.native.openExternal(info.url!)}
                     >
-                        Open
+                        open
                     </Button>
                 </div>
             )}
@@ -824,7 +837,7 @@ function Panel({ userId }: { userId: string; }) {
     );
 }
 
-const SafePanel = ErrorBoundary.wrap(Panel, { noop: true });
+const SafePanel = ErrorBoundary.wrap(Panel, { noop: true }); // dont crash the whole profile lol
 
 type Mount = { root: ReturnType<typeof createRoot>; host: HTMLElement; userId: string; trackKey: string; };
 const mounts = new Map<Element, Mount>();
@@ -833,6 +846,7 @@ let scanning = false;
 let selfMutating = false;
 
 function isShown(el: HTMLElement) {
+    // tab panels lie sometimes
     if (!el.isConnected) return false;
 
     const panel = el.closest('[role="tabpanel"]') as HTMLElement | null;
@@ -856,6 +870,7 @@ function isShown(el: HTMLElement) {
 }
 
 function looksLikeSpotifyCard(el: HTMLElement) {
+    // heuristics go brrr
     const w = el.offsetWidth;
     const h = el.offsetHeight;
     if (w < 180 || h < 64 || h > 480) return false;
@@ -937,6 +952,7 @@ function findSpotifyCards(): HTMLElement[] {
 }
 
 function withOwnDom(fn: () => void) {
+    // ignore our own mutations so the observer doesnt loop forever
     selfMutating = true;
     try {
         fn();
@@ -949,7 +965,7 @@ function unmount(card: Element) {
     const mount = mounts.get(card);
     if (!mount) return;
     withOwnDom(() => {
-        try { mount.root.unmount(); } catch { }
+        try { mount.root.unmount(); } catch (e) { /* whatever */ }
         mount.host.remove();
     });
     mounts.delete(card);
@@ -978,7 +994,7 @@ function mountOn(card: HTMLElement, userId: string, trackKey: string) {
 
         const host = document.createElement("div");
         host.className = "vc-spotBuddy-host";
-        host.dataset.userId = userId;
+        host.dataset.userId = userId; // just for debug
         card.insertAdjacentElement("afterend", host);
 
         const root = createRoot(host);
@@ -988,6 +1004,7 @@ function mountOn(card: HTMLElement, userId: string, trackKey: string) {
 }
 
 function scan() {
+    // discord loves remounting stuff so we babysit it
     if (scanning || selfMutating) return;
     scanning = true;
     try {
@@ -999,6 +1016,7 @@ function scan() {
             const bits = bitsFromCard(card);
             const userId = resolveUserId(card, bits) || me;
             if (!userId) continue;
+            if (!userId.length) continue; // paranoia
 
             const trackKey = bits.trackId || `${bits.title || ""}|${bits.artist || ""}`;
             const existing = mounts.get(card);
@@ -1040,7 +1058,7 @@ let clickScan: ((e: Event) => void) | null = null;
 function queueScan(force = false) {
     if (selfMutating && !force) return;
     clearTimeout(scanTimer);
-    scanTimer = setTimeout(scan, 280);
+    scanTimer = setTimeout(scan, 300); // debounce-ish
 }
 
 function onMutations(muts: MutationRecord[]) {
@@ -1062,14 +1080,14 @@ function onMutations(muts: MutationRecord[]) {
 
 export default definePlugin({
     name: "SpotBuddy",
-    description: "Spotify lyrics under the listening card on profiles",
-    authors: [{ name: "kyn", id: 839321627938390047n }],
+    description: "lyrics under spotify on profiles",
+    authors: [{ name: "kyn", id: 839321627938390047n }], // me
     settings,
 
     start() {
         FluxDispatcher.subscribe("SPOTIFY_PLAYER_STATE", onSpotify);
-        FluxDispatcher.subscribe("PRESENCE_UPDATES", ping);
-        applyCustomCss();
+        FluxDispatcher.subscribe("PRESENCE_UPDATES", bump);
+        applyCustomCss(); // custom css if any
         obs = new MutationObserver(onMutations);
         obs.observe(document.body, { childList: true, subtree: true });
         clickScan = (e: Event) => {
@@ -1079,15 +1097,16 @@ export default definePlugin({
                 queueScan(true);
         };
         document.addEventListener("click", clickScan, true);
-        clockIv = setInterval(syncOwnClock, 400);
-        scanIv = setInterval(() => queueScan(true), 2500);
+        clockIv = setInterval(syncOwnClock, 450);
+        scanIv = setInterval(() => queueScan(true), 2000);
         syncOwnClock();
         queueScan(true);
+        // done
     },
 
     stop() {
         FluxDispatcher.unsubscribe("SPOTIFY_PLAYER_STATE", onSpotify);
-        FluxDispatcher.unsubscribe("PRESENCE_UPDATES", ping);
+        FluxDispatcher.unsubscribe("PRESENCE_UPDATES", bump);
         customStyleEl?.remove();
         customStyleEl = null;
         obs?.disconnect();
